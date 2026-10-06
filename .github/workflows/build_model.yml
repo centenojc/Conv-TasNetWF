@@ -4,7 +4,7 @@ on: [workflow_dispatch]
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -13,26 +13,41 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install torch asteroid coremltools
+          pip install --upgrade pip
+          # Pin torch to a tested version and install requests + asteroid + coremltools
+          pip install "torch<=2.5.1" torchaudio requests asteroid coremltools huggingface_hub
 
       - name: Convert to Core ML Package
         run: |
           python -c '
-          import torch, coremltools as ct
+          import torch
+          import coremltools as ct
           from asteroid.models import ConvTasNet
+
+          print("Downloading model...")
           model = ConvTasNet.from_pretrained("mpariente/ConvTasNet_WHAM_sepclean").eval()
-          dummy = torch.randn(1, 16000)
+
+          # 1 second chunk at 8000 Hz for this specific checkpoint (WHAM is 8kHz)
+          # Use 1x8000 samples for the input tensor
+          sample_rate = 8000
+          chunk_length = sample_rate * 1
+          dummy = torch.randn(1, chunk_length)
+
+          print("Tracing model with TorchScript...")
           traced = torch.jit.trace(model, dummy)
+
+          print("Converting to Core ML...")
           mlmodel = ct.convert(
               traced,
-              inputs=[ct.TensorType(name="audio_chunk", shape=(1, 16000), dtype=float)],
+              inputs=[ct.TensorType(name="audio_chunk", shape=(1, chunk_length), dtype=float)],
               compute_units=ct.ComputeUnit.ALL,
               minimum_deployment_target=ct.target.iOS18
           )
           mlmodel.save("ConvTasNet.mlpackage")
+          print("Saved ConvTasNet.mlpackage successfully!")
           '
 
-      - name: Compile to mlmodelc with Apple Compiler
+      - name: Compile to mlmodelc
         run: |
           xcrun coremlc compile ConvTasNet.mlpackage .
           zip -r separator.mlmodelc.zip ConvTasNet.mlmodelc
