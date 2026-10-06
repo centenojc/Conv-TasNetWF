@@ -13,9 +13,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          # Pin torch to a tested version and install requests + asteroid + coremltools
-          pip install "torch<=2.5.1" torchaudio requests asteroid coremltools huggingface_hub
+          python -m pip install --upgrade pip
+          # Match exact torch and torchaudio versions to keep C++ ABI symbols aligned
+          pip install torch==2.5.1 torchaudio==2.5.1
+          pip install requests huggingface_hub asteroid coremltools
 
       - name: Convert to Core ML Package
         run: |
@@ -27,8 +28,7 @@ jobs:
           print("Downloading model...")
           model = ConvTasNet.from_pretrained("mpariente/ConvTasNet_WHAM_sepclean").eval()
 
-          # 1 second chunk at 8000 Hz for this specific checkpoint (WHAM is 8kHz)
-          # Use 1x8000 samples for the input tensor
+          # WHAM_sepclean is sampled at 8 kHz (8,000 samples = 1 second)
           sample_rate = 8000
           chunk_length = sample_rate * 1
           dummy = torch.randn(1, chunk_length)
