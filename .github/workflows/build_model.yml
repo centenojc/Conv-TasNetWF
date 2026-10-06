@@ -1,0 +1,44 @@
+name: Build CoreML Model
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install torch asteroid coremltools
+
+      - name: Convert to Core ML Package
+        run: |
+          python -c '
+          import torch, coremltools as ct
+          from asteroid.models import ConvTasNet
+          model = ConvTasNet.from_pretrained("mpariente/ConvTasNet_WHAM_sepclean").eval()
+          dummy = torch.randn(1, 16000)
+          traced = torch.jit.trace(model, dummy)
+          mlmodel = ct.convert(
+              traced,
+              inputs=[ct.TensorType(name="audio_chunk", shape=(1, 16000), dtype=float)],
+              compute_units=ct.ComputeUnit.ALL,
+              minimum_deployment_target=ct.target.iOS18
+          )
+          mlmodel.save("ConvTasNet.mlpackage")
+          '
+
+      - name: Compile to mlmodelc with Apple Compiler
+        run: |
+          xcrun coremlc compile ConvTasNet.mlpackage .
+          zip -r separator.mlmodelc.zip ConvTasNet.mlmodelc
+
+      - name: Upload Compiled Model
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-model
+          path: separator.mlmodelc.zip
