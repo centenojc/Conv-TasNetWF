@@ -14,7 +14,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Match exact torch and torchaudio versions to keep C++ ABI symbols aligned
           pip install torch==2.5.1 torchaudio==2.5.1
           pip install requests huggingface_hub asteroid coremltools
 
@@ -22,27 +21,47 @@ jobs:
         run: |
           python -c '
           import torch
+          import torch.nn as nn
           import coremltools as ct
           from asteroid.models import ConvTasNet
 
-          print("Downloading model...")
-          model = ConvTasNet.from_pretrained("mpariente/ConvTasNet_WHAM_sepclean").eval()
+          print("1. Downloading Asteroid model...")
+          asteroid_model = ConvTasNet.from_pretrained("mpariente/ConvTasNet_WHAM_sepclean").eval()
 
-          # WHAM_sepclean is sampled at 8 kHz (8,000 samples = 1 second)
+          # 2. Wrap internal layers to bypass dynamic if/else branching
+          class StaticConvTasNet(nn.Module):
+              def __init__(self, base_model):
+                  super().__init__()
+                  self.encoder = base_model.encoder
+                  self.masker = base_model.masker
+                  self.decoder = base_model.decoder
+
+              def forward(self, x: torch.Tensor) -> torch.Tensor:
+                  # x shape: [1, 1, 8000] -> standard audio tensor with channel dimension
+                  tf_rep = self.encoder(x)
+                  est_masks = self.masker(tf_rep)
+                  masked_tf_rep = est_masks * tf_rep.unsqueeze(1)
+                  decoded = self.decoder(masked_tf_rep)
+                  return decoded
+
+          model = StaticConvTasNet(asteroid_model).eval()
+
           sample_rate = 8000
           chunk_length = sample_rate * 1
-          dummy = torch.randn(1, chunk_length)
+          # Fixed 3D shape: [Batch=1, Channels=1, Samples=8000]
+          dummy = torch.randn(1, 1, chunk_length)
 
-          print("Tracing model with TorchScript...")
+          print("2. Tracing static model...")
           traced = torch.jit.trace(model, dummy)
 
-          print("Converting to Core ML...")
+          print("3. Converting to Core ML (targeting iOS 18 / ANE)...")
           mlmodel = ct.convert(
               traced,
-              inputs=[ct.TensorType(name="audio_chunk", shape=(1, chunk_length), dtype=float)],
+              inputs=[ct.TensorType(name="audio_chunk", shape=(1, 1, chunk_length), dtype=float)],
               compute_units=ct.ComputeUnit.ALL,
               minimum_deployment_target=ct.target.iOS18
           )
+
           mlmodel.save("ConvTasNet.mlpackage")
           print("Saved ConvTasNet.mlpackage successfully!")
           '
